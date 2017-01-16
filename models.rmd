@@ -1,0 +1,109 @@
+---
+title: "Train and Validation"
+author: "Montse Figueiro"
+date: "19 de diciembre de 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(data.table)
+memory.limit(60000)
+train <- read.csv("train_final.csv")
+validation <- read.csv("validation.csv")
+train$indrel <- as.factor(train$indrel)
+train[is.na(train)] <- ""
+validation$indrel <- as.factor(validation$indrel)
+validation[is.na(validation)] <- ""
+train$ind_actividad_cliente <- as.factor(train$ind_actividad_cliente)
+train[21:47] <- lapply(train[21:47], as.factor)
+levels(train$month_fec_ult) <- c(levels(train$month_fec_ult),"")
+levels(train$year_fec_ult) <- c(levels(train$year_fec_ult),"")
+train$month_fec_ult[is.na(train$month_fec_ult)] <- ""
+train$year_fec_ult[is.na(train$year_fec_ult)] <- ""
+train$month <- as.factor(train$month)
+```
+
+Elimino la columna antigüedad, tiene datos incorrectos, en su lugar dejaremos la columna antic, calculada a partir de la fecha_dato y fecha_alta (en meses):
+
+```{r}
+train$antiguedad <- NULL
+head(train)
+```
+De la fecha de alta voy a extraer el año y el mes de alta, elimino la columna fecha alta:
+```{r}
+train$year_alta <- substr(train$fecha_alta,1,4)
+train$month_alta <- substr(train$fecha_alta,6,7)
+train$fecha_alta <- NULL
+train$year_alta <- as.factor(train$year_alta)
+train$month_alta <- as.factor(train$month_alta)
+```
+
+Creamos una tabla con la media de antiguedad para cada ID:
+```{r}
+library(data.table)
+setDT(train)[, Antiguedad := mean(antic), by = ncodpers]
+train$Antiguedad <- as.integer(train$Antiguedad)
+```
+Antigüedad desde 0 a 254 meses. 
+
+La edad va desde 2 a 127 años, deberíamos eliminar los casos extremos (menores de 16 y mayores de 100)
+```{r}
+summary(train$age)
+newdata <- train[ which(train$age>=16 & train$age<= 100), ]
+summary(newdata$age)
+```
+Hay una observacion por empleado para cada mes, si agregamos por mes nos da cuantos empleados han contratado cada tipo de producto y que meses había más contrataciones:
+
+```{r}
+head(newdata)
+newdata[newdata$ncodpers==15889,]
+```
+
+Aun y así tenemos 25503 observaciones que figuran como fallecidos, los eliminamos del estudio. No vamos a ofrecer ningún producto a una persona fallecida.
+
+```{r}
+newdata <- newdata[newdata$indfall=="N",]
+summary(newdata$indfall)
+newdata$indfall <- NULL
+summary(newdata)
+```
+
+
+
+Quitamos las fechas y la antigüedad para ver las variaciones en los productos y cuantas filas estan duplicadas. Quito fecha dato, antigüedad, rank, mes, 
+```{r}
+length(unique(train$ncodpers))
+cols <- c("ncodpers", "ind_empleado", "pais_residencia", 
+"sexo", "age", "fecha_alta", "indrel", "indrel_1mes", 
+"tiprel_1mes", "indresi", "indext", "conyuemp", "canal_entrada", 
+"indfall", "cod_prov", "ind_actividad_cliente", "renta", "segmento", 
+"SAVING", "GUARANTEES", "CURRENT", "DERIVADA", "PAYROLLACCOUNT", 
+"JUNIOR", "MASPARTICULAR", "PARTICULAR", "PARTICULARPLUS", "SHORTTERMDEPOSIT", 
+"MEDIUMTERMDEPOSIT", "LONGTERMDEPOSIT", "EACCOUNT", "FUNDS", 
+"MORTGAGE", "PENSIONS", "LOANS", "TAXES", "CREDITCARD", "SECURITIES", 
+"HOMEACCOUNT", "PAYROLL", "PENSIONES_2", "DIRECTDEBIT")
+
+train_ult_mes <- train[train$fecha_dato=="2016-04-28",]
+train_resto <- train[train$fecha_dato!="2016-04-28",]
+
+train_sinfechas <- train_resto[,cols]
+train_sinfechas$contador <- 1
+
+train_aggregado <- aggregate(contador~.,train_sinfechas,sum)
+train_ult_mes <- train_ult_mes[,cols]
+dim(train_ult_mes)
+dim(train_aggregado)
+train_ult_mes$contador <- 99
+
+train_df <- rbind(train_aggregado,train_ult_mes)
+dim(train_df)
+```
+Ahora tenemos un fichero con las fecuencias, reducido, y sin fecconcorde
+
+
+Y si transformamos las numericas en categoricas por rangos.

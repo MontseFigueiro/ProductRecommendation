@@ -1,0 +1,556 @@
+---
+title: "Santander Product Recommendation"
+author: "Montse Figueiro"
+date: "2 de diciembre de 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+###Read Data
+
+```{r}
+library(data.table)
+memory.limit(60000)
+d <- fread("train.csv")
+d <- as.data.frame(d)
+```
+
+Casos sin missing Values (10852549):
+```{r}
+complete <- d[complete.cases(d),]
+```
+
+
+Intentamos conseguir el importe de la renta de otras observaciones para el mismo cliente, pero no existe esta información para la mayoria, solo para 206 clientes que ya tenemos en el fichero complete:
+```
+rentacomplete <- complete[,c("renta","ncodpers")]
+renta <- aggregate(renta~ncodpers,rentacomplete,max)
+n <- merge(d,renta,by="ncodpers",all.x=TRUE)
+```
+
+Podríamos solucionar 5000 observaciones a partir de las rentas de otras observaciones, pero siguen siendo casi 3000000 de observaciones sin informacion de la renta bruta familiar. con lo que no tendremos en cuenta esas observaciones en el estudio.
+
+Casos con Missing Values (2794760):
+```{r}
+library(VIM)
+missings <- d[!complete.cases(d),]
+colswithNA <- names(which(colSums(is.na(d))>0)) 
+missings <- missings[,colswithNA]
+aggr(missings, numbers=TRUE)
+```
+Cuando abrimos el fichero con fread perdemos información sobre el tipo de variables, su clase, vamos a abrir el fichero test con read.csv:
+
+```{r}
+test <- read.csv("test.csv")
+length(complete.cases(test))
+str(test)
+```
+El fichero test tiene solo 24 columnas, sin los productos:
+
+c("fecha_dato", "ncodpers", "ind_empleado", "pais_residencia", 
+"sexo", "age", "fecha_alta", "ind_nuevo", "antiguedad", "indrel", 
+"ult_fec_cli_1t", "indrel_1mes", "tiprel_1mes", "indresi", "indext", 
+"conyuemp", "canal_entrada", "indfall", "tipodom", "cod_prov", 
+"nomprov", "ind_actividad_cliente", "renta", "segmento")
+
+
+Utilizamos solamente los casos completos:
+```{r}
+summary(complete)
+dput(names(complete))
+length(unique(complete$ncodpers))
+length(unique(test$ncodpers))
+```
+En complete tenemos 709411 codigo de personas diferentes, en test tenemos 929615
+
+Cambiamos el tipo de variables:
+
+```{r}
+library(plyr)
+complete$fecha_dato <- as.Date(complete$fecha_dato)
+complete$fecha_alta <- as.Date(complete$fecha_alta)
+complete$ult_fec_cli_1t <- as.factor(complete$ult_fec_cli_1t)
+complete[3:5] <- lapply(complete[3:5], as.factor)
+complete[12:18] <- lapply(complete[12:18], as.factor) 
+complete$nomprov <- as.factor(complete$nomprov)
+complete$segmento <- as.factor(complete$segmento)
+complete$cod_prov <- as.factor(complete$cod_prov)
+complete$ind_nuevo <- as.factor(complete$ind_nuevo)
+complete$indrel <- as.factor(complete$indrel)
+complete$ind_actividad_cliente <- as.factor(complete$ind_actividad_cliente)
+complete[25:48] <- lapply(complete[25:48], as.factor) 
+```
+Queremos añadir un Ranking para cada Id:
+```{r}
+comp <- as.data.table(complete)
+comp <- comp[,yrrank:=rank(fecha_dato,ties.method="first"),by=ncodpers]
+complete$rank <- comp$yrrank
+```
+Hay un campo que solo tiene un valor para todos los clientes "tipodom", lo eliminamos:
+```{r}
+summary(complete$tipodom)
+complete$tipodom <- NULL
+```
+
+
+Vamos a cambiar los nombres de los productos para verlos de manera más comprensible:
+```{r}
+dput(names(complete))
+namesnew <- c("fecha_dato", "ncodpers", "ind_empleado", "pais_residencia", 
+"sexo", "age", "fecha_alta", "ind_nuevo", "antiguedad", "indrel", 
+"ult_fec_cli_1t", "indrel_1mes", "tiprel_1mes", "indresi", "indext", 
+"conyuemp", "canal_entrada", "indfall", "cod_prov", "nomprov", 
+"ind_actividad_cliente", "renta", "segmento", "SAVING", 
+"GUARANTEES", "CURRENT", "DERIVADA", 
+"PAYROLLACCOUNT", "JUNIOR", "MASPARTICULAR", 
+"PARTICULAR", "PARTICULARPLUS", "SHORTTERMDEPOSIT", 
+"MEDIUMTERMDEPOSIT", "LONGTERMDEPOSIT", "EACCOUNT", 
+"FUNDS", "MORTGAGE", "PENSIONS", 
+"LOANS", "TAXES", "CREDITCARD", 
+"SECURITIES", "HOMEACCOUNT", "PAYROLL", "PENSIONES_2", 
+"DIRECTDEBIT", "rank")
+setnames(complete,namesnew)
+```
+
+Sustituimos los espacios en blanco por el ultimo segmento conocido,hemos corregido 37000 observaciones con espacios en blanco el resto las dejaremos como desconocidas:
+```{r}
+seg <- complete[complete$segmento=="",]
+noms <- unique(seg$ncodpers)
+segmento <- complete[complete$ncodpers %in% noms, ]
+aggr_segmento <- aggregate(renta~segmento+ncodpers,segmento,sum)
+datos_segmento <- aggr_segmento[!aggr_segmento$segmento=="",]
+datos_segmento <-  transform(datos_segmento, seg.rank = ave(renta, ncodpers, FUN = function(x) rank(-x, ties.method = "first")))
+datos_segmento$renta <- NULL
+datos_segmento <- datos_segmento[datos_segmento$seg.rank==1,]
+c<- merge(complete,datos_segmento,by="ncodpers",all.x=TRUE)
+c[is.na(c)] <- ""
+c$segmento.x[c$segmento.x==""] <- c$segmento.y[c$segmento.x==""]
+c$segmento.y <- NULL
+c$seg.rank <- NULL
+summary(c$segmento.x)
+summary(complete$segmento)
+colnames(c)[23] <- "segmento"
+complete <- c
+head(complete)
+```
+Los espacios que nos han quedado en blanco los dejamos como "desconocido"
+```{r}
+levels(complete$segmento) <- c(levels(complete$segmento),"unknown")
+complete$segmento[complete$segmento==""] <- "unknown"
+complete$segmento <- factor(complete$segmento)
+plot(complete$segmento)
+```
+El sexo lo sustituimos por "unknow":
+```{r}
+levels(complete$sexo) <- c(levels(complete$sexo),"unknown")
+complete$sexo[complete$sexo==""] <- "unknown"
+complete$sexo <- factor(complete$sexo)
+```
+
+##VISUALIZACION GRÁFICA DE LOS DATOS
+
+Tipo de empleados:
+```{R}
+library(ggplot2)
+ggplot(complete, aes(ind_empleado)) +
+  geom_bar(fill="dodgerblue3")+
+  labs(x = NULL,y = NULL)
+prop.table(table(complete$ind_empleado))
+```
+El 99.9% no son empleados.
+
+```{r}
+plot(complete$sexo)
+```
+Histograma de la edad:
+```{r}
+hist(complete$age)
+```
+Tenemos un valor mínimo de 2 años y un máximo de 127
+
+Comprobamos en indfall: Hay 2252 fallecidos con edades de los 20 a los 116, pero hay gente mayor de 116 en el fichero con lo que debemos sacarlos del estudio porque probablemente no hayan sido marcados como fallecidos.
+
+```{r}
+fallecidos <- complete[complete$indfall=="S",]
+summary(fallecidos$age)
+length(unique(fallecidos$ncodpers))
+```
+Vemos cuando se han dado de alta nuestros clientes (por días de alta, demasiados niveles en el eje x, no se ven los datos con claridad):
+```{r}
+clientes <- complete[,c("fecha_alta")]
+clientes <- as.data.frame(clientes)
+clientes$contador <- 1
+frecuenciafechaalta <- aggregate(contador~.,clientes,sum)
+ggplot( data = frecuenciafechaalta, aes(clientes, contador )) + geom_line() 
+```
+
+Agregamos por año y por mes (quitamos el día): número de nuevas altas cada mes desde 1995.
+```{r}
+library(zoo)
+frecuenciafechaalta$mes <- as.factor(as.integer(strftime(frecuenciafechaalta$clientes,"%m")))
+frecuenciafechaalta$año <- as.factor(as.integer(strftime(frecuenciafechaalta$clientes,"%Y")))
+clientesmesaño <- aggregate(contador~mes+año,frecuenciafechaalta,sum)
+clientesmesaño$prueba <- paste(clientesmesaño$año,clientesmesaño$mes,sep="-")
+clientesmesaño$prueba <- as.Date(as.yearmon(clientesmesaño$prueba))
+clientesmesaño$año <- as.factor(clientesmesaño$año)
+año1995 <- clientesmesaño[clientesmesaño$año==1995,]
+```
+
+###GRAFICO MULTIPLE ALTAS POR MESES Y AÑOS
+
+Ejemplo para las altas en 1995:
+```{r}
+ggplot( data = año1995, aes(prueba, contador )) + geom_line() + scale_x_date(date_breaks = "1 month", date_labels = "%m")+theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+labs(title="Clientes nuevos 1995",
+        x ="Mes", y = "Número Clientes")
+```
+
+Gráfico múltiple altas cada Año:
+```{r}
+ggplot( data = clientesmesaño, aes(x=mes, y=contador, group= año, colour= año )) + geom_line() + facet_wrap(~año)
+```
+Vemos un claro patrón en el número de altas en los años 2011,2012,2013,2014.
+
+
+Indice nuevo cliente (ind_nuevo): tiene valor 1 si el cliente se ha registrado en los últimos 6 meses (¿a partir de cuando consideramos?) la última fecha_dato es 28-05-2016, por lo tanto deberían tener un 1 los que han sido registrados con posterioridad a 28-11-2015.
+
+```{R}
+nuevosclientes <- complete[complete$ind_nuevo=="1",]
+length(unique(nuevosclientes$ncodpers))
+summary(nuevosclientes$fecha_alta)
+```
+La última fecha de alta que tenemos es 18-09-2015, no hay nadie con antigüedad menos de 6 meses. En el fichero test tampoco, eliminamos esta variable.
+```{r}
+complete$ind_nuevo <- NULL
+```
+
+Variables indrel y ult_fec_cli_1t estan relaciondas
+```{r}
+clientesNoprincipales <- complete[!complete$ult_fec_cli_1t=="",]
+dim(clientesNoprincipales)
+indrel99 <- complete[complete$indrel=="99",]
+dim(indrel99)
+```
+Podemos crear dos columnas para extraer el mes y el año de la fecha de baja porque con el campo indrel ya tenemos la información de que no es cliente principal.
+```{r}
+d <- "2015-10-28"
+prueba <- substr(d,6,7)
+complete$month_fec_ult <- substr(complete$ult_fec_cli_1t,6,7)
+complete$year_fec_ult <- substr(complete$ult_fec_cli_1t,1,4)
+complete$month_fec_ult <- as.factor(complete$month_fec_ult)
+complete$year_fec_ult <- as.factor(complete$year_fec_ult)
+summary(complete$month_fec_ult)
+summary(complete$year_fec_ult)
+```
+Los que ya no son principales, analizamos cuando se producen las bajas (en que meses se suelen producir): 
+```{r}
+bajasclienteprinc <- complete[!complete$ult_fec_cli_1t=="",]
+plot(bajasclienteprinc$month_fec_ult)
+```
+Como ya hemos extraido el mes y el año de la ultima fecha como cliente princial, podemos eliminar esa columna:
+```{r}
+complete$ult_fec_cli_1t <- NULL
+```
+
+Indrel_1mes: Tenemos espacios en Blanco se desconoce el tipo de cliente que es a principio de mes, lo paso a "Unknow"
+```{r}
+levels(complete$indrel_1mes) <- c(levels(complete$indrel_1mes),"unknown")
+complete$indrel_1mes[complete$indrel_1mes==""] <- "unknown"
+complete$indrel_1mes <- factor(complete$indrel_1mes)
+```
+
+Hay niveles creados por error como 1.0, 2.0....
+```{r}
+complete$indrel_1mes[complete$indrel_1mes=="1.0"] <- "1"
+complete$indrel_1mes[complete$indrel_1mes=="2.0"] <- "2"
+complete$indrel_1mes[complete$indrel_1mes=="3.0"] <- "3"
+complete$indrel_1mes[complete$indrel_1mes=="4.0"] <- "4"
+complete$indrel_1mes <- factor(complete$indrel_1mes)
+plot(complete$indrel_1mes)
+```
+
+tiprel_1mes, nos indica el tipo de relación que tiene el cliente a principio de mes.
+```{r}
+levels(complete$tiprel_1mes) <- c(levels(complete$tiprel_1mes),"unknown")
+complete$tiprel_1mes[complete$tiprel_1mes==""] <- "unknown"
+complete$tiprel_1mes <- factor(complete$tiprel_1mes)
+plot(complete$tiprel_1mes)
+```
+vemos que el porcentaje más alto se lo llevan clientes "Inactivos"
+
+Indresi: S o N si la residencia coincide con el pais del banco.
+```{r}
+summary(complete$indresi)
+```
+Solamente en 83 observaciones el país es diferente.
+
+Indext: S o N si el pais de nacimiento es diferente al pais del banco (si es extranjero)
+
+```{r}
+summary(complete$indext)
+extranjeros <- complete[complete$indext=="S",]
+length(unique(extranjeros$ncodpers))
+par(mfrow=c(2,2))
+hist(extranjeros$age)
+plot(extranjeros$age,extranjeros$renta)
+plot(extranjeros$tiprel_1mes)
+plot(extranjeros$segmento)
+```
+
+Tenemos 31594 extranjeros en la base de datos.
+
+conyuemp: pareja de empleado tiene valor 1.
+```{r}
+seg <- complete[complete$conyuemp=="",]
+noms <- unique(seg$ncodpers)
+segmento <- complete[complete$ncodpers %in% noms, ]
+aggr_segmento <- aggregate(renta~conyuemp+ncodpers,segmento,sum)
+datos_segmento <- aggr_segmento[!aggr_segmento$conyuemp=="",]
+datos_segmento <-  transform(datos_segmento, seg.rank = ave(renta, ncodpers, FUN = function(x) rank(-x, ties.method = "first")))
+datos_segmento$renta <- NULL
+datos_segmento <- datos_segmento[datos_segmento$seg.rank==1,]
+c<- merge(complete,datos_segmento,by="ncodpers",all.x=TRUE)
+c[is.na(c)] <- ""
+c$conyuemp.x[c$conyuemp.x==""] <- c$conyuemp.y[c$conyuemp.x==""]
+c$conyuemp.y <- NULL
+c$seg.rank <- NULL
+colnames(c)[14] <- "conyuemp"
+complete <- c
+
+levels(complete$conyuemp) <- c(levels(complete$conyuemp),"unknown")
+complete$conyuemp[complete$conyuemp==""] <- "N"
+complete$conyuemp <- factor(complete$conyuemp)
+```
+Nos falta casi toda la información de esta variable, tenemos solamente 17 casos indicados como parejas de empleados, vamos a considerar el resto como si fueran NO.
+
+
+HEMOS GRABADO EL FICHERO PORQUE NO NOS PERMITÍA CONTINUAR
+
+```{R}
+memory.limit(60000)
+complete <- read.csv("train_clean.csv")
+complete[22:48] <- lapply(complete[22:48], as.factor)
+levels(complete$month_fec_ult) <- c(levels(complete$month_fec_ult),"")
+levels(complete$year_fec_ult) <- c(levels(complete$year_fec_ult),"")
+complete$month_fec_ult[is.na(complete$month_fec_ult)] <- ""
+complete$year_fec_ult[is.na(complete$year_fec_ult)] <- ""
+str(complete)
+```
+Canal_entrada: (tenemos 158 canales de entrada diferentes),siempre es la misma para el mismo cliente. MICE? solo con id cliente y con canal?
+```{r}
+canal <- complete[complete$canal_entrada=="",]
+noms <- unique(canal$ncodpers)
+can <- complete[complete$ncodpers %in% noms, ]
+aggr_canal <- aggregate(renta~canal_entrada+ncodpers,can,sum)
+datos_canal <- aggr_canal[!aggr_canal$canal_entrada=="",]
+datos_canal <-  transform(datos_canal, id.rank = ave(renta, ncodpers, FUN = function(x) rank(-x, ties.method = "first")))
+datos_canal$renta <- NULL
+datos_canal<- datos_canal[datos_canal$id.rank==1,]
+c<- merge(complete,datos_canal,by="ncodpers",all.x=TRUE)
+c[is.na(c)] <- ""
+c$canal_entrada.x[c$canal_entrada.x==""] <- c$canal_entrada.y[c$canal_entrada.x==""]
+c$canal_entrada.y <- NULL
+c$id.rank <- NULL
+colnames(c)[15] <- "canal_entrada"
+c$canal_entrada[is.na(c$canal_entrada)] <- ""
+complete <- c
+
+
+
+levels(complete$canal_entrada) <- c(levels(complete$canal_entrada),"unknown")
+complete$canal_entrada[complete$canal_entrada==""] <- "unknown"
+complete$canal_entrada <- factor(complete$canal_entrada)
+plot(complete$canal_entrada)
+```
+se concentra en tres categorías KHE, KAT y KFC
+
+
+```{r}
+write.csv(complete,"train_clean2.csv",row.names = FALSE)
+```
+Cod_prov: Provincia código
+nomprov: Nombre provincia
+```{r}
+summary(complete$nomprov)
+plot(complete$cod_prov)
+```
+
+En la provincia 28 y 8 están la mayoría de los clientes, esto es Madrid y Barcelona.
+Nos vamos a quedar solo con una de las dos variables puesto que indican lo mismo, eliminamos la columna nomprov:
+
+```{r}
+complete$nomprov <- NULL
+```
+
+
+```{r}
+write.csv(complete,"train_clean2.csv",row.names = FALSE)
+```
+
+READ FILE:
+
+```{R}
+complete <- read.csv("train_clean2.csv")
+str(complete)
+complete$ind_actividad_cliente <- as.factor(complete$ind_actividad_cliente)
+complete$cod_prov <- as.factor(complete$cod_prov)
+complete[21:47] <- lapply(complete[21:47], as.factor) 
+```
+ind_actividad_cliente: 1 activo 0 inactivo
+```{r}
+summary(complete$ind_actividad_cliente)
+```
+
+Podemos ver la relación con la variable tiprel_1mes, de los clientes que tenemos como Activos:
+```{r}
+clientesactivos <-complete[complete$ind_actividad_cliente=="1",] 
+clientesinactivos <- complete[complete$ind_actividad_cliente=="0",]
+plot(clientesactivos$tiprel_1mes,main="Clientes Activos Clasificacion Tipo Relacion 1 mes")
+```
+```{r}
+summary(clientesactivos$tiprel_1mes)
+```
+Vamos a ver si la informacion cambia durante los diferentes meses para un mismo cliente:
+```{r}
+aggrtipocliente1mes <- aggregate(renta~ncodpers+tiprel_1mes,data=complete,sum)
+aggrtipocliente1mes <- aggrtipocliente1mes[order(aggrtipocliente1mes$ncodpers),]
+aggrtipocliente1mes <-  transform(aggrtipocliente1mes, 
+          id.rank = ave(renta, ncodpers, 
+                          FUN = function(x) rank(-x, ties.method = "first")))
+summary(aggrtipocliente1mes$id.rank)
+clientesconcambios <- aggrtipocliente1mes[aggrtipocliente1mes$id.rank>=2,]
+length(unique(clientesconcambios$ncodpers))
+prop.table(table(clientesconcambios$id.rank))
+```
+80279 clientes tienen algun cambio en su tipo de relación a primero de mes. Un 76% tiene un cambio. De un total de 709411 clientes. Es un 11.32% del total de clientes.
+
+Extraigo del agregado solo los clientes con cambios.
+```{r}
+nombres <- as.vector(unique(clientesconcambios$ncodpers))
+out <- aggrtipocliente1mes[aggrtipocliente1mes$ncodpers %in% nombres, ]
+out[out$ncodpers=="1404977",]
+```
+
+
+```{r}
+numerocambioscliente <- aggregate(id.rank~ncodpers,aggrtipocliente1mes,max)
+plot(numerocambioscliente$id.rank)
+```
+
+####CLIENTES CON 4 CAMBIOS
+
+```{R}
+nom_4_cambios <- numerocambioscliente[numerocambioscliente$id.rank==4,]
+nom_4_cambios <- unique(nom_4_cambios$ncodpers)
+out_4_cambios <- aggrtipocliente1mes[aggrtipocliente1mes$ncodpers %in% nom_4_cambios, ]
+head(out_4_cambios)
+complete[complete$ncodpers==1404797,]
+```
+
+Todos los que tienen como desconocido el campo tipo de relación han tenido algun tipo de información anterior.
+
+
+
+```{r}
+plot(clientesinactivos$tiprel_1mes,main="Clientes Inactivos Clasificacion Tipo Relacion 1 mes")
+```
+
+Renta: Ingresos brutos familiares
+
+Distribucion de la renta por edad
+```{r}
+plot(complete$age,complete$renta, main="Renta Age Distribution")
+```
+Distribución de la renta por Sexo
+
+```{r}
+mujeres <- complete[complete$sexo=="H",]
+hombres <- complete[complete$sexo=="V",]
+par(mfrow=c(1,2))
+plot(mujeres$age,mujeres$renta,main="Distribucion Renta Mujeres por Edad")
+plot(hombres$age,hombres$renta,main="Distribucion Renta Hombres por Edad")
+```
+
+###cALCULAMOS LA ANTIGUEDAD A PARTIR DE LA FECHA DE ALTA Y LA FECHA DEL DATO
+
+Analizamos la variable antigüedad que tiene un valor de -999999, creamos una columna "antic" con nuestra propia fórmula, vemos que no está correctamente calculado para cada periodo, esto también nos dice que el campo ind_nuevo que nos indica los que tienne menos de 6 meses de antigüedad tampoco están bien calculados.
+```{r}
+complete$antic <- as.integer((as.Date(complete$fecha_dato)-as.Date(complete$fecha_alta))/30)
+unique(complete$antiguedad)
+unique(complete$antic)
+```
+
+```{r}
+length(unique(complete$ncodpers))
+length(unique(complete$ind_empleado))
+unique(complete$pais_residencia)
+unique(complete$sexo)
+unique(complete$age)
+length(unique(complete$renta))
+min(as.Date(complete$fecha_alta))
+max(as.Date(complete$fecha_alta))
+```
+Fecha de alta más antigüa es 16/01/1995 y la fecha más actual es 18/09/2015
+
+```{r}
+rentamin <- aggregate(renta~ ncodpers,complete,min)
+rentamax <- aggregate(renta~ncodpers,complete,max)
+x <- merge(rentamin,rentamax,by.x="ncodpers",by.y="ncodpers")
+x$rentadif <- x$renta.y-x$renta.x
+unique(x$rentadif)
+```
+La renta es siempre la misma para la misma persona durante todos los meses
+
+
+El campo edad va desde 2 a 127 años:
+```{r}
+defunciones <- complete[complete$age>100,]
+jovenes <- complete[complete$age<16,]
+length(unique(jovenes$ncodpers))
+length(unique(defunciones$ncodpers))
+head(defunciones,50)
+head(jovenes,50)
+```
+Hay 5285 menores de 18 años y 831 mayores de 100 años.
+
+
+Observación de un caso en concreto:
+```{r}
+caso_train <- complete[complete$ncodpers==294945,]
+caso_test <- test[test$ncodpers==294945,]
+```
+vemos que la edad no varía, no se calcula, la antigûedad si.
+
+
+Casos con renta más alta:
+```{r}
+mostrenta <- complete[order(-complete$renta),]
+```
+
+Filas duplicadas?
+Quitamos el campo fecha_dato para comprobar:
+```{r}
+head(complete)
+sinfechadato <- complete[,2:48]
+
+duplicados <- sinfechadato[duplicated(sinfechadato),]
+anyDuplicated(sinfechadato)
+```
+
+Extraemos el mes de la fecha_dato:
+```{r}
+complete$month <- as.factor(as.integer(strftime(complete$fecha_dato,"%m")))
+```
+
+
+##DIVIDIMOS EL FICHERO TRAIN EN TRAIN Y VALIDACIÓN:(EL ULTIMO MES MAYO DEL 2016 SE QUEDARÁ COMO VALIDACIÓN)
+
+```{r}
+val <- complete[complete$fecha_dato=="2016-05-28",]
+train <- complete[!complete$fecha_dato=="2016-05-28",]
+write.csv(val,"validation.csv",row.names =FALSE)
+write.csv(train,"train_final.csv",row.names=FALSE)
+```
